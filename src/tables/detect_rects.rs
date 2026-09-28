@@ -2302,9 +2302,10 @@ fn decorative_fill_rects(
             // column-population ratio was rejected for that reason.
             //
             // An earlier version of this fix tried absolute band height
-            // (round 6) and then wide-and-tall (round 7) as the tiebreak
-            // signal, and both were found wrong by building the
-            // counterexample: `test_exact_half_populated_tall_wide_partial_band_stays_decoration`
+            // (`7c3c44d`) and then wide-and-tall (`91cc2de`'s `is_narrow`
+            // tie-branch carve-out) as the tiebreak signal, and both were
+            // found wrong by building the counterexample:
+            // `test_exact_half_populated_tall_wide_partial_band_stays_decoration`
             // is regression case 1 made 22 rows tall, `!is_narrow`, clearing
             // any plausible row-count bound — and it must still stay
             // decoration, because folding it reintroduces the same
@@ -2383,30 +2384,38 @@ fn decorative_fill_rects(
                 // down to one non-empty row, which fails
                 // `try_build_grid`'s own `non_empty_rows < min_rows` check
                 // inside `detect_table_from_rect_group` (confirmed by the
-                // debug log: `rejected: only 1 non-empty rows (need 2)`,
-                // 17 times across this document's retried candidate
-                // groupings, each immediately followed in the log by
-                // `trying row-stripe detection` and then `row-stripe table
-                // accepted: 48x6` -- the real, correct table, built by
-                // `detect_row_stripe_table` from independent text-position
-                // column clustering that never calls
-                // `propagate_merged_cells` at all). Reading this rect as
-                // decoration instead leaves every row non-empty, so
-                // `detect_table_from_rect_group` returns `Some` with the
-                // malformed 4-column candidate — confirmed directly, not
-                // just by the final snapshot diff, by instrumenting and
-                // mutating this branch: all 17 of those occurrences switch
-                // from the `rejected …` / `row-stripe table accepted`
-                // sequence to `trimmed N empty outer columns` (the log line
-                // right before `try_build_grid` returns `GridResult::Ok`)
-                // in 14 of the 17 cases (the other 3 already failed for
-                // unrelated reasons on both sides of the mutation). Because
+                // debug log: `rejected: only 1 non-empty rows (need 2)`
+                // fires 17 times across this document's retried candidate
+                // groupings and page passes, but only 14 of those are this
+                // tied 4-column region -- each of those 14 is immediately
+                // followed in the log by `trying row-stripe detection` then
+                // `row-stripe table accepted: 48x6` or `47x6`, the real,
+                // correct table, built by `detect_row_stripe_table` from
+                // independent text-position column clustering that never
+                // calls `propagate_merged_cells` at all. The other 3 of the
+                // 17 are unrelated 2-column (`19x2`) candidates that never
+                // reach this tie branch at all -- they fold via the
+                // separate, pre-existing `is_narrow && num_cols <= 10` gate
+                // above, and recover as `19x6` the same way in both the
+                // real build and the mutation below, confirming they are
+                // not evidence for or against this classification). Reading
+                // this rect as decoration instead leaves every row
+                // non-empty, so `detect_table_from_rect_group` returns
+                // `Some` with the malformed 4-column candidate — confirmed
+                // directly, not just by the final snapshot diff, by
+                // instrumenting and mutating this branch: exactly those 14
+                // occurrences switch from the `rejected …` / `row-stripe
+                // table accepted` sequence to `trimmed N empty outer
+                // columns` (the log line right before `try_build_grid`
+                // returns `GridResult::Ok`); the 3 unrelated `19x2` cases
+                // are unchanged by the mutation, as expected. Because
                 // `Option::or_else` short-circuits on `Some`,
                 // `detect_row_stripe_table` never even runs for those 14
-                // clusters, and `test_snapshot_2013_app2`'s snapshot
-                // collapses from 6 columns to 3 -- confirming this is
-                // exactly the reported bug, reproduced by this exact
-                // mutation on this exact real document. So this rect is
+                // clusters under the mutation, and
+                // `test_snapshot_2013_app2`'s snapshot collapses from 6
+                // columns to 3 -- confirming this is exactly the reported
+                // bug, reproduced by this exact mutation on this exact real
+                // document. So this rect is
                 // not "a genuine merge, preserved" the way a real rowspan
                 // is -- it is a whole-table-spanning background rect whose
                 // own would-be "table" is wrong, and folding it is what
@@ -6252,14 +6261,17 @@ mod tests {
         // fold collapses the band's 23 per-row entries in its 2 populated
         // columns down to one row each, which crashes the CONTENT-DENSITY
         // check a few lines after the fold inside `try_build_grid` itself
-        // (`non_empty_cells / total_cells < 0.25`, not the row-count check --
-        // 10 non-empty of 100 cells after the fold, well under the 25%
-        // floor). That is not a different mechanism than what the comment at
-        // the tie branch describes for `test_snapshot_2013_app2` -- it is the
-        // SAME "folding gets the malformed candidate discarded" outcome,
-        // just caught one check earlier at this fixture's smaller scale, so
-        // this test asserts `GridResult::Failed` rather than inspecting
-        // folded cell text. Confirmed by mutation: forcing
+        // (`non_empty_cells / total_cells < 0.25`, not the row-count check
+        // that runs just before it -- this fixture's fold still leaves 4
+        // non-empty ROWS, clearing that earlier `non_empty_rows < min_rows`
+        // check, but only 10 non-empty CELLS of 100, well under the later
+        // 25% content-density floor). That is not a different mechanism
+        // than what the comment at the tie branch describes for
+        // `test_snapshot_2013_app2` -- it is the SAME "folding gets the
+        // malformed candidate discarded" outcome, just caught by a
+        // different one of `try_build_grid`'s own checks at this fixture's
+        // smaller scale, so this test asserts `GridResult::Failed` rather
+        // than inspecting folded cell text. Confirmed by mutation: forcing
         // `is_page_frame_sized = false` here (leaving the band unfolded)
         // makes the grid build successfully with every row's own text
         // intact, so `Failed` really is downstream of the fold decision

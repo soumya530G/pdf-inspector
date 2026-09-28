@@ -12003,14 +12003,12 @@ fn test_full_pipeline_exact_half_populated_tall_wide_partial_band_stays_decorati
 #[test]
 fn test_full_pipeline_page_frame_sized_exact_tie_recovers_via_cell_rect_fallback() {
     // A full-pipeline (synthetic-PDF) mirror of the grid-level
-    // `test_page_frame_sized_exact_tie_still_folds`. Two earlier attempts at
-    // this test got this wrong: one assumed the fold simply "did not
-    // reproduce" at this scale and dropped the test without finding out
-    // why; a second added this test back asserting `assert_population_intact`
-    // but without checking whether the RESULT depended on the
-    // classification at all. Instrumented directly (`RUST_LOG=debug`,
-    // `cargo test -- --nocapture`) against this exact 4x25
-    // page-frame-sized fixture, in the real (unmutated) build:
+    // `test_page_frame_sized_exact_tie_still_folds`. An earlier attempt at
+    // this test assumed the fold simply "did not reproduce" at this scale
+    // and dropped the test without finding out why. It does reproduce;
+    // what's different is what happens NEXT. Instrumented directly
+    // (`RUST_LOG=debug`, `cargo test -- --nocapture`) against this exact
+    // 4x25 page-frame-sized fixture, in the real (unmutated) build:
     //
     //   grid: 25x4 = 100 cells, 100 filled, ratio=1.00
     //   rejected: content ratio 0.10 < 0.25 (10 non-empty / 100 total)
@@ -12050,11 +12048,18 @@ fn test_full_pipeline_page_frame_sized_exact_tie_recovers_via_cell_rect_fallback
     // — not the cell-rect fallback used here — that recovers app2's real
     // 6-column table once the fold makes the first half of that chain
     // return `None` (see the tie-branch comment in `decorative_fill_rects`
-    // for that trace). So this test is not a stand-in for app2's own
-    // recovery path, but it is a genuine, separately verified instance of
-    // the same shape of claim: folding a page-frame-sized tie does not
-    // strand real content, because some other path in this module picks it
-    // back up.
+    // for that trace). The debug log above shows why THIS fixture takes the
+    // other branch: there is no `trying row-stripe detection` line at all,
+    // meaning `detect_row_stripe_table` was never even attempted --
+    // `is_row_stripe_pattern` requires a median rect width over 200pt
+    // (page-spanning), and this fixture's whole table is only 4 columns *
+    // 40pt = 160pt wide, so `.or_else(|| detect_row_stripe_table(rects))`
+    // short-circuits to `None` without trying, landing this cluster in
+    // `failed_clusters` for the later cell-rect fallback stage to pick up.
+    // So this test is not a stand-in for app2's own recovery path, but it
+    // is a genuine, separately verified instance of the same shape of
+    // claim: folding a page-frame-sized tie does not strand real content,
+    // because some other path in this module picks it back up.
     //
     // Confirmed by mutation (forcing `is_page_frame_sized = false` so the
     // band is never folded, then re-running with `RUST_LOG=debug`): the
