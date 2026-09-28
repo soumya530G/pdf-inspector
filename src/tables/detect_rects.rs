@@ -2124,12 +2124,30 @@ fn rect_span_counts(
 /// WIDE bands not spanning most of the table's rows, a case measured to be
 /// decoration in every fixture seen — not because misclassifying toward
 /// decoration is safe in general.
-/// Row count above which an exactly-tied band (half its covered columns
-/// populated) is trusted as a genuine merge rather than decoration. See the
-/// tie-handling comment inside `decorative_fill_rects` for the measurement
-/// this is based on: no decorative band in the corpus exceeds ~8 rows, and
-/// the real tied fixture (`test_snapshot_2013_app2`) is 45-48 rows.
-const LARGE_BAND_ROW_COUNT: usize = 20;
+/// A tied band's row coverage, as a fraction of the table's own row count,
+/// above which it is considered "page-frame-sized" rather than a localized
+/// strip. See the tie-handling comment inside `decorative_fill_rects` for
+/// the measurement this is based on: the real tied fixture
+/// (`test_snapshot_2013_app2`) covers 95-100% of its table's rows.
+///
+/// Honest limit on that measurement: this constant is NOT independently
+/// pinned by any fixture in this corpus, only asserted by
+/// `is_page_frame_sized`'s WIDTH half (`cols_covered == num_cols`).
+/// `test_exact_half_populated_tall_wide_partial_band_stays_decoration`
+/// covers 22 of 24 rows (91.7%) and still must stay decoration — clearing
+/// this 90% bound — but it does so on the width check alone (8 of 12
+/// columns, not full-width); no fixture tests a FULL-WIDTH tied band in the
+/// 50-90% row-coverage range that this bound would actually decide (below
+/// 50%, `!is_narrow && !tall_band` already returns decoration before this
+/// branch is ever reached, so the live range this bound governs is
+/// 50-100%). Mutating this constant from 9 (90%) down to 5 (50%) does not
+/// fail any test in this crate. So "90%" is a reasonable-looking round
+/// number sitting between the confirmed real fixture (95-100%) and the
+/// theoretical floor (50%, below which the branch is unreachable), not a
+/// value any fixture has shown to be the right place to draw the line —
+/// treat it as unpinned until a full-width tied fixture in that window
+/// exists to pin it either way.
+const PAGE_FRAME_ROW_FRACTION_TENTHS: usize = 9; // >= 90%
 
 fn decorative_fill_rects(
     group_rects: &[(f32, f32, f32, f32)],
@@ -2283,67 +2301,132 @@ fn decorative_fill_rects(
             // boundary case on the SAME signal; a fifth threshold tweak on
             // column-population ratio was rejected for that reason.
             //
-            // The signal that separates them instead: absolute band
-            // height. Every decorative-band fixture measured in this file
-            // — round 3 through round 5's regressions, all of them — is at
-            // most ~8 rows tall. `test_snapshot_2013_app2`'s genuine merge
-            // is 45-48 rows, near the page-frame size, not a localized
-            // shading strip inside a larger table. That is not a coincidence
-            // of these particular fixtures: a decorative band is drawn to
-            // highlight or separate a handful of rows *within* a table,
-            // while a rect that tall relative to real-world row heights is,
-            // structurally, closer to being the table's own body than an
-            // accent drawn over it. `LARGE_BAND_ROW_COUNT` sits an order of
-            // magnitude above the tallest observed decorative band and
-            // comfortably below the real fixture's height, so it is not
-            // itself a re-tuned version of the ratio cutoff it replaces —
-            // it is measuring a different quantity (rows, not a ratio of
-            // columns) and the two classes it separates are not close on
-            // that quantity. `test_large_exact_half_populated_band_still_folds`
-            // pins the fold side of this tiebreak independently of the real
-            // corpus fixture; `test_narrow_bands_at_or_under_half_the_rows_keep_every_row`'s
-            // cases plus the new round-6 fixtures pin the decoration side.
+            // An earlier version of this fix tried absolute band height
+            // (round 6) and then wide-and-tall (round 7) as the tiebreak
+            // signal, and both were found wrong by building the
+            // counterexample: `test_exact_half_populated_tall_wide_partial_band_stays_decoration`
+            // is regression case 1 made 22 rows tall, `!is_narrow`, clearing
+            // any plausible row-count bound — and it must still stay
+            // decoration, because folding it reintroduces the same
+            // row-shuffle bug the small case was built to catch. Height,
+            // alone or combined with `is_narrow`, cannot separate that
+            // fixture from `test_snapshot_2013_app2`'s real merge; neither
+            // can column-population ratio (see above).
             //
-            // This IS a numeric threshold, and it has its own boundary: a
-            // real merge that happens to be both short (a handful of rows)
-            // AND exactly tied on column population would still be
-            // misclassified as decoration by this rule. No fixture measured
-            // so far exhibits that shape — every real multi-row merge found
-            // in the corpus is either a strict content majority (folds
-            // above) or a large band like `test_snapshot_2013_app2`. If one
-            // ever surfaces, it needs a signal beyond row count and column
-            // ratio (e.g. rect area relative to the table's own bounding
-            // box, or the reviewer's other suggested direction of content
-            // clustering vs. scatter within populated columns) — this
-            // comment is the marker for that being a known open boundary,
-            // not a claim that ties are fully solved.
+            // The signal that actually separates them, confirmed by
+            // instrumenting this branch directly against the real fixture:
+            // app2's tied rect is `cols_covered == num_cols` — the table's
+            // FULL width, not most of it (a measured 4-of-4 columns) — AND
+            // `rows.len()` is 95-100% of `num_rows`. It is page-frame-sized
+            // in BOTH dimensions: not a band drawn within a larger table,
+            // but a rect coextensive with the table itself. The confirmed
+            // regressions, including the tall-but-partial-width one above,
+            // are never full-width, so they are unaffected by this signal
+            // regardless of height. `PAGE_FRAME_ROW_FRACTION_TENTHS` (>=90%
+            // of the table's own rows) sits below the real fixture's
+            // 95-100%, but — unlike the width half of this check — it is
+            // NOT independently pinned by any fixture in this corpus, only
+            // asserted by the width check: see that constant's own doc
+            // comment for the honest accounting (mutating 90% down to 50%
+            // fails nothing in this crate, because every fixture that
+            // clears 50% row-coverage also happens to fail the width
+            // check). `test_page_frame_sized_exact_tie_still_folds` pins the fold
+            // side against that actual shape; `test_exact_half_populated_tall_wide_partial_band_stays_decoration`
+            // and `test_narrow_bands_at_or_under_half_the_rows_keep_every_row`'s
+            // cases pin the decoration side, including the specific
+            // "wide and tall but not full-width" shape that defeated the
+            // previous (height-only) version of this tiebreak.
+            //
+            // This is deliberately conservative, and it still has an open
+            // boundary of its own: a real merge that is tied, tall, but
+            // NOT full-width (or full-width but not near-full-height) would
+            // still be misclassified as decoration by this rule. No fixture
+            // measured so far exhibits that shape — every real multi-row
+            // merge found in the corpus is either a strict content majority
+            // (folds above) or page-frame-sized like
+            // `test_snapshot_2013_app2`. If one ever surfaces, it needs a
+            // signal beyond width/height coverage and column ratio (e.g.
+            // content clustering vs. scatter within populated columns, per
+            // the reviewer's other suggested direction) — this comment is
+            // the marker for that being a known open boundary, not a claim
+            // that ties are fully solved. Separately, and out of scope for
+            // this predicate: a table with 10 or fewer total columns never
+            // reaches this tie branch at all when its covered band is
+            // `is_narrow` — the narrow-band gate above (`is_narrow &&
+            // num_cols <= 10`) folds it unconditionally regardless of
+            // population, including the case of a genuinely narrow (e.g.
+            // 2-column) table whose own frame rect covers the whole table.
+            // That gate predates this round's fix (`3c29cbf`) and no
+            // fixture in this corpus exercises it at that total-column
+            // size; it is a pre-existing gap, not one this round
+            // introduces or resolves.
             if self_populated * 2 == cols.len() {
-                // The height tiebreak below is only trusted for WIDE bands.
-                // Measured: a tall (>=20-row), IS_NARROW band with an exact
-                // tie is not hypothetical -- it is the same shape as the
-                // confirmed 1-of-2-columns regression, just taller, and it
-                // reproduces the identical row-shuffle bug (confirmed by
-                // building one: 2 covered columns of a 12-column table, 25
-                // rows, one column fully populated, the other blank --
-                // `self_populated=1, cols.len()=2, rows.len()=25`; with
-                // height as the only signal this folds 25 rows of distinct
-                // per-row text into one cell). No fixture anywhere in this
-                // corpus shows a genuine narrow (`is_narrow`) multi-row
-                // merge taller than a few rows -- the narrow-band gate above
-                // already required `rows_spanned >= 4` on the assumption
-                // that decorative narrow bands top out around 4-6 rows, and
-                // every genuine narrow rowspan measured is 2-3 rows
-                // (`genuine_rowspan_is_still_reported_as_merge_evidence`,
-                // `test_genuine_narrow_rowspan_in_a_wide_table_still_propagates`).
-                // So for `is_narrow` bands, an exact tie stays decoration
-                // regardless of height; the height rescue is reserved for
-                // WIDE bands, where `test_snapshot_2013_app2`'s real fixture
-                // (`is_narrow=false`, `cols_covered=4` of `num_cols=4`) is
-                // the only measured tied case that must still fold.
-                if is_narrow {
-                    return true;
-                }
-                return rows.len() < LARGE_BAND_ROW_COUNT;
+                // This is deliberately conservative: only the ONE measured
+                // shape (see the comment above this branch) is trusted to
+                // fold. A tie on a band that is wide but not full-width, or
+                // tall but not near-full-height, stays decoration --
+                // including cases that might, for all this predicate
+                // knows, be genuine merges too. No fixture in this corpus
+                // confirms that, so nothing here claims it.
+                //
+                // What "folding" actually buys app2, traced end to end by
+                // instrumenting this exact branch and running
+                // `test_snapshot_2013_app2` with `RUST_LOG=debug`: it is NOT
+                // that this candidate becomes the winning table -- it is
+                // that folding it is what lets the CORRECT table get a
+                // chance to be tried at all. `detect_direct_rect_table`
+                // (this file) is `detect_table_from_rect_group(rects).or_else(
+                // || detect_row_stripe_table(rects))` -- the SAME rects
+                // tried two ways, the second only running if the first
+                // returns `None`. `propagate_merged_cells` collapses the
+                // tied rect's per-row entries in its 2 populated columns
+                // down to one non-empty row, which fails
+                // `try_build_grid`'s own `non_empty_rows < min_rows` check
+                // inside `detect_table_from_rect_group` (confirmed by the
+                // debug log: `rejected: only 1 non-empty rows (need 2)`,
+                // 17 times across this document's retried candidate
+                // groupings, each immediately followed in the log by
+                // `trying row-stripe detection` and then `row-stripe table
+                // accepted: 48x6` -- the real, correct table, built by
+                // `detect_row_stripe_table` from independent text-position
+                // column clustering that never calls
+                // `propagate_merged_cells` at all). Reading this rect as
+                // decoration instead leaves every row non-empty, so
+                // `detect_table_from_rect_group` returns `Some` with the
+                // malformed 4-column candidate — confirmed directly, not
+                // just by the final snapshot diff, by instrumenting and
+                // mutating this branch: all 17 of those occurrences switch
+                // from the `rejected …` / `row-stripe table accepted`
+                // sequence to `trimmed N empty outer columns` (the log line
+                // right before `try_build_grid` returns `GridResult::Ok`)
+                // in 14 of the 17 cases (the other 3 already failed for
+                // unrelated reasons on both sides of the mutation). Because
+                // `Option::or_else` short-circuits on `Some`,
+                // `detect_row_stripe_table` never even runs for those 14
+                // clusters, and `test_snapshot_2013_app2`'s snapshot
+                // collapses from 6 columns to 3 -- confirming this is
+                // exactly the reported bug, reproduced by this exact
+                // mutation on this exact real document. So this rect is
+                // not "a genuine merge, preserved" the way a real rowspan
+                // is -- it is a whole-table-spanning background rect whose
+                // own would-be "table" is wrong, and folding it is what
+                // keeps it from pre-empting the correct one.
+                //
+                // The isolated grid-level fixture
+                // (`test_page_frame_sized_exact_tie_still_folds`) reaches
+                // the SAME outcome (`GridResult::Failed`) through a
+                // different one of `try_build_grid`'s checks -- its content
+                // ratio floor, not the row-count one -- because that
+                // fixture's table is much smaller than app2's real one (25
+                // rows total, almost all of them inside the band, versus
+                // app2's tied band sitting within a much larger real
+                // document). Same fold, same "candidate is discarded"
+                // result, different specific gate catching it; see that
+                // test for the confirmed mutation showing the fold
+                // decision is what the discard depends on there too.
+                let is_page_frame_sized = cols_covered == num_cols
+                    && rows.len() * 10 >= num_rows * PAGE_FRAME_ROW_FRACTION_TENTHS;
+                return !is_page_frame_sized;
             }
             // Below the tie: spread-columns are a strict MINORITY of the
             // band's covered columns. A genuine merge (like
@@ -6018,9 +6101,10 @@ mod tests {
     fn test_exact_half_populated_columns_small_band_stays_decoration() {
         // 12 cols, band over cols 1..9 (8 covered columns), 4 of them
         // (1-4) fully populated across the 5-row band, 4 (5-8) left blank.
-        // self_populated = 4, cols.len() = 8: an exact tie. The band is
-        // only 5 rows tall, well under `LARGE_BAND_ROW_COUNT`, so it must
-        // stay decoration and every row must keep its own text.
+        // self_populated = 4, cols.len() = 8: an exact tie. The band covers
+        // 8 of 12 columns, not the table's full width, so it is not
+        // page-frame-sized regardless of height and must stay decoration —
+        // every row must keep its own text.
         let (num_cols, num_rows, band, c0, c1) =
             (12usize, 6usize, (1usize, 5usize), 1usize, 9usize);
         let populated = |_r: usize, c: usize| c < 5; // cols 1-4 of the band populated
@@ -6100,21 +6184,34 @@ mod tests {
     }
 
     #[test]
-    fn test_exact_half_populated_large_band_still_folds() {
-        // The other side of the tiebreak: a LARGE band (well past
-        // `LARGE_BAND_ROW_COUNT`) with an exact-half column-population tie
-        // must still be trusted as a genuine merge, the way
-        // `test_snapshot_2013_app2`'s real fixture is (confirmed by
-        // instrumenting the tie branch and running it: app2 hits
-        // `self_populated=2, cols.len()=4, rows.len()=45..48`, an exact
-        // tie, and correctly returns "not decoration").
+    fn test_exact_half_populated_tall_wide_partial_band_stays_decoration() {
+        // A CORRECTED case, replacing what this test used to assert. It was
+        // first written to expect "still folds" on the theory that height
+        // alone (`!is_narrow` + `rows.len() >= LARGE_BAND_ROW_COUNT`) could
+        // distinguish `test_snapshot_2013_app2`'s real merge from the
+        // confirmed regressions, just by being taller than them.
         //
-        // 12 cols (`> 10`, keeps `is_narrow` false at 8 covered columns --
-        // `test_exact_half_populated_columns_small_band_stays_decoration`
-        // uses the SAME 8-of-12 shape at a small height so this is a direct
-        // height-only contrast), band over cols 1..9 (8 covered columns),
-        // 22 rows tall in a 24-row table; 4 of the 8 covered columns fully
-        // populated, 4 blank. self_populated=4, cols.len()=8: a tie.
+        // That theory was wrong, and this exact fixture is the
+        // counterexample: 12 cols, band over cols 1..9 (8 of 12 covered --
+        // NOT the full table width), 22 rows tall in a 24-row table, 4 of
+        // the 8 covered columns fully populated. This is regression case 1
+        // (`test_exact_half_populated_columns_small_band_stays_decoration`)
+        // made taller, nothing else changed -- and it is NOT distinguishable
+        // from that regression by height, column-population ratio, or
+        // `is_narrow` (all three are identical to the small case). A rule
+        // that folds this would refold the same bug the small case was
+        // built to catch, just at a different height.
+        //
+        // What DOES distinguish `test_snapshot_2013_app2`'s real merge,
+        // confirmed by instrumenting the tie branch directly against that
+        // fixture: its tied rect spans `cols_covered == num_cols` (the
+        // table's FULL width, not just most of it -- 4 of 4 covered
+        // columns) AND `rows.len()` is ~95-100% of `num_rows`, not merely
+        // ">= 20". It is page-frame-sized in BOTH dimensions, not just
+        // tall. This fixture covers only 8 of 12 columns (67%), so it must
+        // stay decoration regardless of its row count.
+        // `test_page_frame_sized_exact_tie_still_folds` is the fold-side
+        // case that actually matches app2's measured shape.
         let (num_cols, num_rows, band, c0, c1) =
             (12usize, 24usize, (1usize, 22usize), 1usize, 9usize);
         let populated = |_r: usize, c: usize| c < 5; // global cols 1-4 of the band (c0=1) populated
@@ -6125,34 +6222,86 @@ mod tests {
             GridResult::Ok(table) => table,
             other => panic!("expected the grid to build, got {other:?}"),
         };
-        // A fold merges the band's rows together in its populated columns,
-        // so those columns' per-row `R{r}C{c}` identity is lost -- unlike
-        // the decoration cases above, this must NOT be population-intact.
-        let band_col0_texts: Vec<&str> = table.cells[band.0..=band.1]
-            .iter()
-            .map(|row| row[c0].trim())
-            .collect();
+        assert_grid_population_intact(
+            &table,
+            num_rows,
+            num_cols,
+            band,
+            (c0, c1),
+            populated,
+            "tall wide (but not full-width) band, exact tie",
+        );
+    }
+
+    #[test]
+    fn test_page_frame_sized_exact_tie_still_folds() {
+        // The fold side of the tiebreak, built to match
+        // `test_snapshot_2013_app2`'s actual measured shape rather than
+        // "wide and tall": a rect spanning the ENTIRE width of a small
+        // table (`cols_covered == num_cols`) and nearly its entire height,
+        // with an exact column-population tie. 4 total columns (matching
+        // the instrumented shape of the real fixture's tied rect), band
+        // rows 1-23 of a 25-row table (23/25 = 92% of rows, clears the 90%
+        // page-frame bound), 2 of the 4 columns fully populated.
+        //
+        // This test name says "still folds", and mechanically a fold IS
+        // what `decorative_fill_rects` decides here -- but at THIS grid
+        // size that fold is not separately observable via `try_build_grid`'s
+        // return value the way the other cases in this file are. Instrumenting
+        // `try_build_grid` directly against this exact fixture shows why: the
+        // fold collapses the band's 23 per-row entries in its 2 populated
+        // columns down to one row each, which crashes the CONTENT-DENSITY
+        // check a few lines after the fold inside `try_build_grid` itself
+        // (`non_empty_cells / total_cells < 0.25`, not the row-count check --
+        // 10 non-empty of 100 cells after the fold, well under the 25%
+        // floor). That is not a different mechanism than what the comment at
+        // the tie branch describes for `test_snapshot_2013_app2` -- it is the
+        // SAME "folding gets the malformed candidate discarded" outcome,
+        // just caught one check earlier at this fixture's smaller scale, so
+        // this test asserts `GridResult::Failed` rather than inspecting
+        // folded cell text. Confirmed by mutation: forcing
+        // `is_page_frame_sized = false` here (leaving the band unfolded)
+        // makes the grid build successfully with every row's own text
+        // intact, so `Failed` really is downstream of the fold decision
+        // asserted in the earlier grid-level tests, not an unrelated
+        // rejection. The full fold-then-discard chain through real candidate
+        // selection remains `test_snapshot_2013_app2`'s job to prove
+        // end-to-end.
+        let (num_cols, num_rows, band, c0, c1) = (4usize, 25usize, (1usize, 23usize), 0usize, 4);
+        let populated = |_r: usize, c: usize| c < 2;
+        let (items, rects) =
+            make_shaded_grid_with_population(num_cols, num_rows, band, c0, c1, populated);
+        let skip = vec![false; rects.len()];
+        let result = try_build_grid(&items, &rects, 1, &skip, false);
         assert!(
-            band_col0_texts.iter().any(|t| t.contains(' ')),
-            "expected the large tied band's populated column to fold multiple \
-             rows' text together, got {band_col0_texts:?}"
+            matches!(result, GridResult::Failed),
+            "expected the page-frame-sized tied band's fold to leave the \
+             candidate too content-sparse to build (mirroring app2's \
+             fold-then-discard outcome), got {result:?}"
         );
     }
 
     #[test]
     fn test_tall_narrow_column_stripe_exact_tie_stays_decoration() {
-        // The mirror of `test_exact_half_populated_large_band_still_folds`:
-        // a NARROW band (2 covered columns, `is_narrow`) instead of a wide
-        // one -- a full-height zebra stripe over 2 columns where only 1 is
-        // populated, spanning 25 of 30 rows in a 12-column table. This is
-        // the same shape as the confirmed `1-of-2-columns` regression, just
-        // tall enough to clear `LARGE_BAND_ROW_COUNT`.
+        // The narrow mirror of `test_page_frame_sized_exact_tie_still_folds`:
+        // a NARROW band (2 covered columns of 12, `is_narrow`) instead of a
+        // full-width one -- a full-height zebra stripe over 2 columns where
+        // only 1 is populated, spanning 25 of 30 rows in a 12-column table.
+        // This is the same shape as the confirmed `1-of-2-columns`
+        // regression, just tall enough that an earlier, height-only version
+        // of this tiebreak folded it (confirmed by building it against that
+        // version and watching it reproduce the identical row-shuffle bug:
+        // 25 rows of distinct per-row text folded into one cell).
         //
-        // Height alone does NOT decide this tie (unlike the wide case):
-        // built and ran this before the `is_narrow` guard was added and
-        // confirmed it reproduced the identical row-shuffle bug (25 rows of
-        // distinct per-row text folded into one cell). The `is_narrow`
-        // check in the tie branch is what keeps it decoration.
+        // The current `is_page_frame_sized` signal keeps it decoration for
+        // a more direct reason than a dedicated `is_narrow` carve-out: this
+        // band covers `cols_covered = 2` of `num_cols = 12`, nowhere near
+        // `cols_covered == num_cols`, so it fails the full-width half of
+        // `is_page_frame_sized` regardless of its height. A narrow band
+        // structurally cannot be page-frame-sized in a table with more
+        // than a couple of columns, which is why the tie branch no longer
+        // needs an `is_narrow` special case at all -- the width check
+        // subsumes it.
         let (num_cols, num_rows, band, c0, c1) =
             (12usize, 30usize, (2usize, 26usize), 4usize, 6usize);
         let populated = |_r: usize, c: usize| c == 4;
